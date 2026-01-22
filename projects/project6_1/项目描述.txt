@@ -1,0 +1,11 @@
+实践一：设计并实现一套面向 langgraph 任务规划的 DSL 语言
+
+输入输出定义：
+输入：DSL 脚本文件（YAML 或 JSON）
+输出：执行流程日志、最终结果
+
+示例 DSL 功能要求：
+包含任务节点（start、step1、step2）
+支持条件判断（if...then...else）
+支持工具调用（call_tool）
+支持跳转逻辑（goto next_state）

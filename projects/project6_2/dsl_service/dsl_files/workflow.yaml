@@ -1,0 +1,52 @@
+graph:
+  name: "demo_workflow"
+  start_node: "search_step"
+  nodes:
+    - id: "search_step"
+      type: "task"
+      tool: "search_tool"
+      args:
+        query: "langgraph tutorial"
+      next: "check_results"
+
+    - id: "check_results"
+      type: "condition"
+      condition:
+        expression: "'LangGraph' in str(results)"
+        then: "weather_step"
+        else: "failure_step"
+
+    - id: "weather_step"
+      type: "task"
+      tool: "weather_tool"
+      args:
+        location: "Beijing"
+      next: "calc_step"
+
+    - id: "calc_step"
+      type: "task"
+      tool: "calculator_tool"
+      args:
+        expression: "100 * 2"
+      next: "order_step"
+
+    - id: "order_step"
+      type: "task"
+      tool: "order_tool"
+      args:
+        order_id: "$order_id"
+        user_id: "$user_id"
+      next: "success_end"
+
+    - id: "failure_step"
+      type: "task"
+      tool: "calculator_tool"
+      args:
+        expression: "0"
+      next: "fail_end"
+
+    - id: "success_end"
+      type: "end"
+
+    - id: "fail_end"
+      type: "end"
