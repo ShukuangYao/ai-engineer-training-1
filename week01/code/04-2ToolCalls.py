@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 
 # 加载环境变量
 load_dotenv()
-api_key= os.getenv('OPENAI_API_KEY')   
-base_url = os.getenv('OPENAI_API_BASE')
+api_key = os.getenv('DEEPSEEK_API_KEY')
+base_url = os.getenv('DEEPSEEK_API_BASE')
 
 # 初始化 OpenAI 客户端
 client = OpenAI(
@@ -37,19 +37,19 @@ tools = [
 
 # 创建一个消息列表，随着时间推移会不断添加内容
 messages = [
-    {"role": "user", "content": "我的运势如何？我是水瓶座。"}
+    {"role": "user", "content": "我的运势如何？我是双鱼座。"}
 ]
 
 # 2. 使用定义的工具提示模型
 response = client.chat.completions.create(
-    model="gpt-4o-mini",
+    model="deepseek-chat",
     tools=tools,
     messages=messages,
 )
 
 print("模型初始输出:")
 print(json.dumps(response.model_dump(), indent=2, ensure_ascii=False))
-
+print('-'*50)
 # 保存函数调用输出以供后续请求使用
 function_call = None
 function_call_arguments = None
@@ -90,7 +90,7 @@ for i, message in enumerate(messages):
 
 
 response = client.chat.completions.create(
-    model="gpt-4o-mini",
+    model="deepseek-chat",
     tools=tools,
     messages=messages,
 )

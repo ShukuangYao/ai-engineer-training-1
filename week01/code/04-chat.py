@@ -4,8 +4,8 @@ from dotenv import load_dotenv
 
 # 加载环境变量
 load_dotenv()
-api_key = os.getenv('OPENAI_API_KEY')
-base_url = os.getenv('OPENAI_API_BASE')
+api_key = os.getenv('DEEPSEEK_API_KEY')
+base_url = os.getenv('DEEPSEEK_API_BASE')
 
 # 初始化 OpenAI 客户端
 client = OpenAI(
@@ -16,16 +16,16 @@ client = OpenAI(
 def query(user_prompt):
     """
     发送用户提示到 OpenAI API 并返回响应内容
-    
+
     参数:
         user_prompt (str): 用户输入的提示内容
-        
+
     返回:
         str: AI 的响应内容
     """
     try:
         response = client.chat.completions.create(
-            model="o3-mini",
+            model="deepseek-chat",
             messages=[
                 {"role": "user", "content": user_prompt}
             ]

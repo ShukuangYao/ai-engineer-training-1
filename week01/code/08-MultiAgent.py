@@ -2,7 +2,7 @@
 企业级多智能体协同系统 - 电商客服订单处理案例
 使用 AutoGen 框架实现多任务协同，包括：
 1. 客服流程拆解
-2. 数据查询联动  
+2. 数据查询联动
 3. 跨部门协作调度
 
 适用场景：电商客服系统订单问题处理
@@ -18,23 +18,25 @@ import asyncio
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 from autogen_agentchat.teams import  SelectorGroupChat
 from autogen_agentchat.ui import Console
-from autogen_ext.models.openai import OpenAIChatCompletionClient
+# 注意：如果 IDE 显示导入警告，请确保已安装 autogen-ext[openai]
+# 安装命令：pip install "autogen-ext[openai]"
+from autogen_ext.models.openai import OpenAIChatCompletionClient  # type: ignore
 
 # 加载环境变量
 load_dotenv()
-api_key = os.getenv('OPENAI_API_KEY')
-base_url = os.getenv('OPENAI_API_BASE')
+api_key = os.getenv('DEEPSEEK_API_KEY')
+base_url = os.getenv('DEEPSEEK_API_BASE')
 
-# 配置OPENAI COMPATIBLE客户端
+# 配置 DeepSeek 客户端（兼容 OpenAI API 格式）
 model_client = OpenAIChatCompletionClient(
-    model="openai/gpt-4o-mini",
+    model="deepseek-chat",
     api_key=api_key,
     base_url=base_url,
     model_info={
         "vision": False,
         "function_calling": True,
         "json_output": True,
-        "family": "gpt",
+        "family": "deepseek",
         "structured_output": True
     }
 )

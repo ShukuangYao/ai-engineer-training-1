@@ -14,3 +14,6 @@ redis==5.0.1
 loguru==0.7.2
 pytest==7.4.3
 pytest-asyncio==0.21.1
+# 固定 packaging 和 wheel 版本以解决依赖冲突
+packaging>=23.2,<24.0
+wheel<0.46.0

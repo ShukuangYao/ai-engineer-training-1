@@ -1,26 +1,24 @@
 import os
-from openai import OpenAI
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
-api_key = os.getenv('OPENAI_API_KEY')
-base_url = os.getenv('OPENAI_API_BASE')
-print(f"-- debug -- openai api key is {api_key[0:10]}******")
+api_key = os.getenv('DEEPSEEK_API_KEY')
+base_url = os.getenv('DEEPSEEK_API_BASE')
+print(f"-- debug -- deepseek api key is {api_key[0:10]}******")
 
-client = OpenAI(
+# 使用 LangChain 调用 DeepSeek
+# 通过配置 base_url 和 api_key 来使用 DeepSeek API
+llm = ChatOpenAI(
     base_url=base_url,
-    api_key=api_key
+    api_key=api_key,
+    model="deepseek-chat"  # DeepSeek 模型名称
 )
 
+# 使用 LangChain 的 invoke 方法调用
+response = llm.invoke("Hello world!")
 
-response = client.chat.completions.create(
-    model="o3-mini",
-    messages=[
-        {"role": "user", "content": "Hello world!"}
-    ]
-)
-
-print(response.choices[0].message.content)
+print(response.content)
 
 
 # 正常会输出结果：Hello! It's great to see you. How can I assist you today?

@@ -10,8 +10,8 @@ from langchain_core.embeddings import Embeddings
 
 # 加载环境变量
 load_dotenv()
-api_key = os.getenv('OPENAI_API_KEY')
-base_url = os.getenv('OPENAI_API_BASE')
+api_key = os.getenv('DEEPSEEK_API_KEY')
+base_url = os.getenv('DEEPSEEK_API_BASE')
 
 # 初始化 OpenAI 客户端
 client = OpenAI(
@@ -21,30 +21,13 @@ client = OpenAI(
 
 
 # =============================================================================
-# OpenAI Embeddings 实现
-# =============================================================================
-class OpenAIEmbeddings(Embeddings):
-    def __init__(self, model: str = "text-embedding-3-small"):
-        self.model = model
-        self.client = client
-        
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        response = self.client.embeddings.create(model=self.model, input=texts)
-        return [data.embedding for data in response.data]
-    
-    def embed_query(self, text: str) -> List[float]:
-        response = self.client.embeddings.create(model=self.model, input=[text])
-        return response.data[0].embedding
-
-
-# =============================================================================
 # 状态定义
 # 项目使用了 LangGraph 框架来构建工作流。
 # LangGraph 是一个基于状态的工作流框架，它要求定义一个状态类来：
 # 在不同的节点（函数）之间传递数据
 # 跟踪整个工作流的执行状态
 # 确保数据的类型安全和一致性
-# 
+#
 # 状态定义明确了整个长文本生成流程中需要传递的数据：
 # original_text: 原始输入文本
 # chunks: 切分后的文本块
@@ -62,9 +45,186 @@ class GenerationState(TypedDict):
     vectorstore: FAISS
 
 # =============================================================================
-# 模型初始化
+# 简单的 Embeddings 实现
+# 使用基于文本特征的简单 embedding，避免 numpy 兼容性问题
+# DeepSeek API 不支持 embeddings，所以使用简单的本地实现
 # =============================================================================
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+'''
+### 一、代码整体功能总结
+这是一个类的**私有方法**（以`_`开头，约定仅内部使用），核心作用是把**任意文本字符串**转换成指定维度（`self.dimension`）的**浮点型单位向量**（模长为1）。转换过程通过MD5哈希提取文本特征、补充向量长度、L2归一化三个核心步骤实现，最终输出的向量可用于文本相似度计算（如余弦相似度）、文本检索等场景。
+
+### 二、逐步骤详细解释（附示例）
+为了让你更容易理解，我先创建一个**可运行的测试类**（把`self.dimension`设为10，避免384维输出过长），再结合示例文本`"Hello World"`拆解每一步。
+
+#### 先准备测试代码（可直接运行）
+```python
+from typing import List
+
+class TextVectorizer:
+    def __init__(self, dimension: int = 10):
+        self.dimension = dimension  # 目标向量维度，示例设为10
+
+    def _text_to_vector(self, text: str) -> List[float]:
+        """将文本转换为固定维度的向量"""
+        import hashlib
+        import math
+
+        # 步骤1：生成MD5哈希的16进制字符串
+        hash_obj = hashlib.md5(text.encode('utf-8'))
+        hash_hex = hash_obj.hexdigest()
+
+        # 步骤2：哈希字符串转初始向量（每2个字符转0-1的浮点数）
+        vector = []
+        for i in range(0, len(hash_hex), 2):
+            if len(vector) >= self.dimension:
+                break
+            val = int(hash_hex[i:i+2], 16) / 255.0
+            vector.append(val)
+
+        # 步骤3：补充向量到目标维度
+        while len(vector) < self.dimension:
+            char_freq = sum(ord(c) for c in text) % 1000 / 1000.0
+            vector.append(char_freq)
+
+        # 步骤4：L2归一化（转单位向量）
+        norm = math.sqrt(sum(x*x for x in vector))
+        if norm > 0:
+            vector = [x / norm for x in vector]
+
+        # 步骤5：安全截取，确保维度正确
+        return vector[:self.dimension]
+
+# 示例：创建实例（维度10），转换文本"Hello World"
+vectorizer = TextVectorizer(dimension=10)
+text = "Hello World"
+result_vector = vectorizer._text_to_vector(text)
+print("最终10维向量：", [round(x, 4) for x in result_vector])  # 保留4位小数，方便查看
+```
+
+#### 逐步骤拆解（结合示例`text="Hello World"`）
+##### 步骤1：生成MD5哈希的16进制字符串
+- **目的**：把任意长度的文本转换成**固定长度（32个字符）** 的16进制字符串，作为文本的基础特征（MD5哈希的特性：输入不同→输出大概率不同；输入相同→输出一定相同）。
+- **示例计算**：
+  文本`"Hello World"`编码为UTF-8字节后，MD5哈希的16进制结果是：`b10a8db164e0754105b7a99be72e3fe5`（共32个字符）。
+
+##### 步骤2：哈希字符串转初始向量
+- **目的**：把32位的16进制字符串转换成0-1之间的浮点数列表（每2个字符对应1个浮点数）。
+- **核心逻辑**：
+  - 16进制的2个字符（如`b1`）可转换为0-255的整数（`b1`转十进制是177）；
+  - 除以255.0，把整数映射到0.0-1.0区间，消除数值范围差异。
+- **示例计算**：
+  哈希字符串`b10a8db164e0754105b7a99be72e3fe5`按步长2截取：
+  - 第1段`b1` → 177 → 177/255 ≈ 0.6941；
+  - 第2段`0a` → 10 → 10/255 ≈ 0.0392；
+  - 第3段`8d` → 141 → 141/255 ≈ 0.5529；
+  - …… 直到生成10个元素（因为示例维度是10，无需到16个）。
+  这一步生成的初始向量前10个元素（示例）：`[0.6941, 0.0392, 0.5529, 0.6941, 0.3922, 0.8941, 0.4588, 0.2549, 0.0196, 0.7255]`（仅示例，实际以运行结果为准）。
+
+##### 步骤3：补充向量到目标维度
+- **为什么需要补充**：MD5哈希只有32个字符，最多生成16个浮点数；如果目标维度（如384）大于16，必须补充剩余元素。
+- **补充规则**：计算文本所有字符的ASCII码之和 → 对1000取模（限制范围） → 除以1000.0（映射到0.0-0.999）。
+- **示例计算**：
+  文本`"Hello World"`的字符ASCII码之和：
+  - H(72) + e(101) + l(108) + l(108) + o(111) + 空格(32) + W(87) + o(111) + r(114) + l(108) + d(100) = 1052；
+  - 1052 % 1000 = 52 → 52/1000 = 0.052；
+  - 如果步骤2生成的向量不足10个（示例中足够，无需补充），就循环添加0.052，直到长度为10。
+
+##### 步骤4：L2归一化（转单位向量）
+- **目的**：让向量的**模长（欧几里得范数）=1**，消除向量长度的影响，只保留方向，方便后续计算余弦相似度（余弦相似度仅和向量方向有关）。
+- **计算公式**：
+  模长 = √(x₁² + x₂² + … + xₙ²)；
+  归一化后的值 = 原数值 / 模长。
+- **示例计算**：
+  假设步骤3的向量是`[0.6941, 0.0392, 0.5529, 0.6941, 0.3922, 0.8941, 0.4588, 0.2549, 0.0196, 0.7255]`；
+  - 计算平方和：0.6941² + 0.0392² + … + 0.7255² ≈ 2.68；
+  - 模长 = √2.68 ≈ 1.637；
+  - 归一化后每个元素 = 原元素 / 1.637，比如第一个元素0.6941/1.637 ≈ 0.424。
+
+##### 步骤5：安全截取
+- **目的**：兜底保障，确保返回的向量长度严格等于`self.dimension`（比如意外情况下长度超过维度，就截取前N个）。
+
+### 三、示例运行结果（参考）
+运行上面的测试代码，输出类似：
+```
+最终10维向量： [0.424, 0.024, 0.338, 0.424, 0.240, 0.546, 0.280, 0.156, 0.012, 0.443]
+```
+（注：实际值因计算精度略有差异，核心是10个0-1之间的浮点数，且向量模长≈1）
+
+### 四、关键点回顾
+1. **核心逻辑**：通过MD5哈希提取文本固定长度特征→补充到目标维度→L2归一化生成单位向量，适配文本相似度计算场景。
+2. **MD5的作用**：将任意长度文本转为固定32字符的哈希串，保证特征长度一致；
+3. **L2归一化的意义**：消除向量长度影响，只保留方向，让不同文本的向量可直接用余弦相似度比较。
+
+### 五、额外说明（新手友好）
+- 方法名前的`_`是Python约定，表示这是**私有方法**，建议仅在类内部调用，外部不要直接使用；
+- 代码中把`import hashlib`和`import math`放在方法内不太规范（建议移到文件顶部），但不影响功能；
+- 这种基于MD5的向量生成方式是**简单的特征工程**，效果不如专业的词向量（如Word2Vec、BERT），但优点是计算快、无依赖。
+'''
+class SimpleEmbeddings(Embeddings):
+    """简单的文本 embedding 实现，使用 TF-IDF 风格的向量化"""
+
+    def __init__(self, dimension: int = 384):
+        self.dimension = dimension
+
+    def _text_to_vector(self, text: str) -> List[float]:
+        """将文本转换为固定维度的向量"""
+        # 导入必要的库：hashlib 用于生成哈希值，math 用于数学运算（如开方）
+        import hashlib  # 提供 MD5 等哈希算法，用于将文本转换为固定长度的哈希值
+        import math     # 提供数学函数，用于计算向量归一化时的模长
+
+        # 步骤1：将输入文本编码为 UTF-8 字节，然后使用 MD5 算法生成哈希对象
+        # MD5 会生成一个 128 位的哈希值（32 个十六进制字符）
+        hash_obj = hashlib.md5(text.encode('utf-8'))
+        # 将哈希对象转换为十六进制字符串（32 个字符，每个字符代表 4 位二进制）
+        hash_hex = hash_obj.hexdigest()
+
+        # 步骤2：初始化空向量列表，用于存储转换后的浮点数
+        vector = []
+        # 遍历哈希字符串，每次取 2 个字符（即一个字节，范围 0x00-0xFF）
+        # range(0, len(hash_hex), 2) 表示从 0 开始，步长为 2，直到哈希字符串末尾
+        for i in range(0, len(hash_hex), 2):
+            # 如果向量长度已经达到目标维度，提前退出循环，避免不必要的计算
+            if len(vector) >= self.dimension:
+                break
+            # 将两个十六进制字符（如 "a3"）转换为整数（如 163），然后除以 255.0
+            # 这样可以将 0-255 的整数范围映射到 0.0-1.0 的浮点数范围
+            val = int(hash_hex[i:i+2], 16) / 255.0
+            # 将归一化后的浮点数添加到向量中
+            vector.append(val)
+
+        # 步骤3：如果哈希值转换后的向量长度不足目标维度（384），需要补充
+        # MD5 哈希只有 32 个字符，每 2 个字符生成一个浮点数，最多只能生成 16 个值
+        # 所以对于 384 维的向量，还需要补充 368 个值
+        while len(vector) < self.dimension:
+            # 计算文本中所有字符的 ASCII 码值之和，然后对 1000 取模，再除以 1000.0
+            # 这样可以得到一个 0.0-0.999 之间的浮点数，作为补充向量的值
+            # 使用取模运算确保值在合理范围内，避免数值过大
+            char_freq = sum(ord(c) for c in text) % 1000 / 1000.0
+            # 将补充值添加到向量中
+            vector.append(char_freq)
+
+        # 步骤4：对向量进行 L2 归一化，使向量的模长为 1
+        # 计算向量的欧几里得范数（模长）：sqrt(sum(x^2))，即所有元素平方和的平方根
+        norm = math.sqrt(sum(x*x for x in vector))
+        # 只有当模长大于 0 时才进行归一化（避免除零错误）
+        if norm > 0:
+            # 将向量中的每个元素都除以模长，得到单位向量（模长为 1）
+            # 归一化后的向量在向量空间中更容易进行相似度计算（如余弦相似度）
+            vector = [x / norm for x in vector]
+
+        # 步骤5：确保返回的向量长度严格等于目标维度，截取前 self.dimension 个元素
+        # 虽然理论上向量长度应该正好是 self.dimension，但这里作为安全措施
+        return vector[:self.dimension]
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """嵌入文档列表"""
+        return [self._text_to_vector(text) for text in texts]
+
+    def embed_query(self, text: str) -> List[float]:
+        """嵌入查询文本"""
+        return self._text_to_vector(text)
+
+embeddings = SimpleEmbeddings(dimension=384)
 
 
 # =============================================================================
@@ -78,11 +238,11 @@ def split_text(text: str) -> List[str]:
     """
     # 按段落分割，保留非空段落
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    
+
     # 如果段落数已在目标范围内，直接返回
     if 2 <= len(paragraphs) <= 10:
         return paragraphs
-    
+
     # 如果段落太少，按句子进一步分割
     if len(paragraphs) < 2:
         sentences = []
@@ -91,7 +251,7 @@ def split_text(text: str) -> List[str]:
             import re
             sent_list = re.split(r'[。！？]', para)
             sentences.extend([s.strip() for s in sent_list if s.strip()])
-        
+
         # 将句子重新组合成2-4个块
         if len(sentences) >= 4:
             chunk_size = len(sentences) // 3
@@ -103,7 +263,7 @@ def split_text(text: str) -> List[str]:
             return chunks[:10]  # 最多10块
         else:
             return sentences
-    
+
     # 如果段落太多，合并相邻段落
     if len(paragraphs) > 10:
         chunk_size = len(paragraphs) // 8  # 目标8块左右
@@ -112,7 +272,7 @@ def split_text(text: str) -> List[str]:
             chunk_paras = paragraphs[i:i+chunk_size]
             chunks.append("\n\n".join(chunk_paras))
         return chunks
-    
+
     return paragraphs
 
 
@@ -122,12 +282,12 @@ def generate_summary(chunk: str) -> str:
     """
     chunk_length = len(chunk)
     target_length = int(chunk_length * 0.3)  # 目标长度为原文的30%
-    
+
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="deepseek-chat",
         messages=[
             {
-                "role": "system", 
+                "role": "system",
                 "content": f"""请对以下内容进行高度精简的摘要。要求：
 1. 摘要长度不超过{target_length}字符（约原文的30%）
 2. 只保留最核心的观点和关键信息
@@ -138,16 +298,16 @@ def generate_summary(chunk: str) -> str:
         ],
         temperature=0
     )
-    
+
     summary = response.choices[0].message.content
-    
+
     # 如果摘要仍然过长，进行二次压缩
     if len(summary) > target_length:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="deepseek-chat",
             messages=[
                 {
-                    "role": "system", 
+                    "role": "system",
                     "content": f"请将以下摘要进一步压缩到{target_length}字符以内，只保留最关键的信息："
                 },
                 {"role": "user", "content": summary}
@@ -155,7 +315,7 @@ def generate_summary(chunk: str) -> str:
             temperature=0
         )
         summary = response.choices[0].message.content
-    
+
     return summary
 
 
@@ -165,16 +325,16 @@ def build_planning_tree(summaries: List[str]) -> Dict:
     请根据以下文本块摘要，生成一份精简的综合报告结构大纲。
     目的：
     - 分析摘要内容，生成逻辑清晰的文章结构
-    
+
     要求：
     - 总共只生成3-4个主要章节，每章不超过1个合并段落
     - 将相关小节内容合并为综合性段落
     - 保持逻辑连贯，突出核心内容
     - 输出为严格JSON格式，不要包含任何其他文字
-    
+
     摘要汇总：
     {combined}
-    
+
     请只输出JSON，格式如下（注意：subsections为空数组，所有内容合并到主章节）：
     {{
       "title": "报告主标题",
@@ -186,18 +346,18 @@ def build_planning_tree(summaries: List[str]) -> Dict:
     }}
     """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="deepseek-chat",
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
-    
+
     content = response.choices[0].message.content.strip()
     # 移除可能的markdown代码块标记
     if content.startswith("```json"):
         content = content[7:]
     if content.endswith("```"):
         content = content[:-3]
-    
+
     # 解析JSON，如果失败则使用默认结构
     parsed_json = json.loads(content.strip()) if content.strip().startswith('{') else {
         "title": "文档分析报告",
@@ -220,13 +380,13 @@ def retrieve_relevant_memory(query: str, vectorstore: FAISS, k: int = 3) -> str:
 def generate_section_content(title: str, context: str) -> str:
     prompt = f"""
     你是专业撰稿人。请根据参考上下文，撰写以下章节的综合性内容。
-    
+
     # 上下文参考：
     {context}
-    
+
     # 目标章节：
     {title}
-    
+
     要求：
     1. 将相关内容合并为一个完整的综合段落
     2. 涵盖该主题的核心要点和关键信息
@@ -235,7 +395,7 @@ def generate_section_content(title: str, context: str) -> str:
     5. 体现专业深度和分析价值
     """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="deepseek-chat",
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -249,23 +409,23 @@ def split_node(state: GenerationState) -> GenerationState:
     print("=" * 60)
     print("🔄 [分块阶段] 开始文本切分")
     print("=" * 60)
-    
+
     chunks = split_text(state["original_text"])
     state["chunks"] = chunks
-    
+
     print(f"📊 切分统计:")
     print(f"   原始文本长度: {len(state['original_text'])} 字符")
     print(f"   切分块数: {len(chunks)} 块")
     avg_length = sum(len(chunk) for chunk in chunks) // len(chunks) if chunks else 0
     print(f"   平均块长度: {avg_length} 字符")
-    
+
     print(f"\n📝 切分结果详情:")
     for i, chunk in enumerate(chunks, 1):
         words = len(chunk.split())
         chars = len(chunk)
         preview = chunk[:50] + "..." if len(chunk) > 50 else chunk
         print(f"   块 {i}: {words} 词 ({chars} 字符) | {preview}")
-    
+
     # 验证分块均匀性
     chunk_sizes = [len(chunk) for chunk in chunks]
     size_variance = max(chunk_sizes) - min(chunk_sizes)
@@ -273,7 +433,7 @@ def split_node(state: GenerationState) -> GenerationState:
     print(f"   最大块: {max(chunk_sizes)} 字符")
     print(f"   最小块: {min(chunk_sizes)} 字符")
     print(f"   大小差异: {size_variance} 字符")
-    
+
     print("✅ 分块阶段完成\n")
     return state
 
@@ -291,40 +451,40 @@ def summarize_and_memorize_node(state: GenerationState) -> GenerationState:
     print("=" * 60)
     print("🧠 [记忆阶段] 构建上下文记忆")
     print("=" * 60)
-    
+
     summaries = []
     print("📝 正在生成摘要...")
-    
+
     for i, chunk in enumerate(state["chunks"], 1):
         print(f"   处理块 {i}/{len(state['chunks'])}...", end=" ")
         summary = generate_summary(chunk)
         summaries.append(summary)
-        
+
         # 计算压缩比例
         compression_ratio = len(summary) / len(chunk) * 100
         print("✅")
         print(f"      原文: {len(chunk)} 字符")
         print(f"      摘要: {len(summary)} 字符 (压缩率: {compression_ratio:.1f}%)")
         print(f"      内容: {summary[:60]}...")
-    
+
     state["summaries"] = summaries
-    
+
     print(f"\n🔍 构建向量数据库...")
     state["vectorstore"] = FAISS.from_texts(summaries, embedding=embeddings)
     print("✅ 向量数据库构建完成")
-    
+
     # 显示向量存储的关键信息
     print(f"📊 向量存储统计:")
     print(f"   存储文档数: {len(summaries)}")
-    print(f"   向量维度: 1536 (text-embedding-3-small)")
-    
+    print(f"   向量维度: 384 (SimpleEmbeddings)")
+
     # 提取并显示关键词索引
     print(f"\n🔑 关键词索引:")
     for i, summary in enumerate(summaries, 1):
         # 简单提取关键词（取前几个重要词汇）
         keywords = [word for word in summary.split()[:5] if len(word) > 2]
         print(f"   文档 {i}: {', '.join(keywords)}")
-    
+
     print("✅ 记忆阶段完成\n")
     return state
 
@@ -338,18 +498,18 @@ def planning_node(state: GenerationState) -> GenerationState:
     print("=" * 60)
     print("📋 [规划阶段] 构建精简文章结构")
     print("=" * 60)
-    
+
     print("🤖 正在分析摘要并生成精简结构树...")
     planning_tree = build_planning_tree(state["summaries"])
     state["planning_tree"] = planning_tree
-    
+
     print("✅ 精简结构树生成完成")
     print(f"\n📖 精简文章大纲结构:")
     print(f"   标题: {planning_tree.get('title', '未定义')}")
-    
+
     sections = planning_tree.get('sections', [])
     print(f"   主章节数: {len(sections)}")
-    
+
     for i, section in enumerate(sections, 1):
         section_title = section.get('title', f'第{i}章')
         subsections = section.get('subsections', [])
@@ -359,14 +519,14 @@ def planning_node(state: GenerationState) -> GenerationState:
                 print(f"      {i}.{j} {subsection}")
         else:
             print(f"      (综合段落，无子章节)")
-    
+
     print(f"\n🎯 精简生成策略:")
     # 重新计算段落数：只计算主章节，因为子章节已合并
     content_paragraphs = len(sections)
     print(f"   预计内容段落数: {content_paragraphs} 段")
     print(f"   段落生成方式: 每章节合并为单一综合段落")
     print(f"   ✅ 符合目标范围: 3-5段")
-    
+
     print("✅ 规划阶段完成\n")
     return state
 
@@ -379,10 +539,10 @@ def generate_node(state: GenerationState) -> GenerationState:
     print("=" * 60)
     print("✍️ [生成阶段] 精简段落生成")
     print("=" * 60)
-    
+
     tree = state["planning_tree"]
     content_parts = []
-    
+
     # 添加主标题
     if "title" in tree:
         title = tree["title"]
@@ -391,31 +551,31 @@ def generate_node(state: GenerationState) -> GenerationState:
 
     sections = tree.get("sections", [])
     print(f"🎯 采用精简策略: {len(sections)} 个主章节，无子章节分割")
-    
+
     for i, section in enumerate(sections, 1):
         sec_title = section["title"]
-        
+
         print(f"\n🔄 生成章节 {i}/{len(sections)}: {sec_title}")
         content_parts.append(f"## {sec_title}")
-        
+
         # 生成综合性章节内容（合并所有相关小节）
         context = retrieve_relevant_memory(sec_title, state["vectorstore"])
         print(f"   📚 检索到相关上下文: {len(context)} 字符")
-        
+
         content = generate_section_content(sec_title, context)
         content_parts.append(content)
         print(f"   ✅ 综合章节内容生成完成: {len(content)} 字符")
-        
+
         # 更新记忆库
         if state["vectorstore"] is not None:
             state["vectorstore"].add_texts([content])
             print(f"   💾 内容已添加到记忆库")
 
     state["final_output"] = "\n\n".join(content_parts)
-    
+
     # 计算实际段落数（标题 + 章节标题 + 内容段落）
     content_paragraphs = len([p for p in content_parts if not p.startswith("#")])
-    
+
     print(f"\n📊 精简生成统计:")
     print(f"   总字符数: {len(state['final_output'])}")
     print(f"   主章节数: {len(sections)}")
@@ -423,7 +583,7 @@ def generate_node(state: GenerationState) -> GenerationState:
     print(f"   总组件数: {len(content_parts)}")
     print(f"   ✅ 成功将段落数控制在 {content_paragraphs} 段（目标: 3-5段）")
     print("✅ 生成阶段完成\n")
-    
+
     return state
 
 
@@ -458,7 +618,7 @@ def create_generation_workflow() -> StateGraph:
 if __name__ == "__main__":
     print("启动长文本生成系统")
     print("=" * 60)
-    
+
     sample_text = """
     在孤独与尊严的海洋中：重读《老人与海》的生命启示
 

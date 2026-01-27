@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 # 加载环境变量
 load_dotenv()
 
-conn = http.client.HTTPSConnection("api.gpt.ge")
+conn = http.client.HTTPSConnection("api.deepseek.com")
 payload = json.dumps({
-   "model": "o3-mini",
+   "model": "deepseek-chat",
    "messages": [
       {
          "role": "user",
@@ -21,7 +21,7 @@ payload = json.dumps({
 })
 
 # 从环境变量获取API token
-api_token = os.getenv('OPENAI_API_KEY')  # 或者使用其他环境变量名
+api_token = os.getenv('DEEPSEEK_API_KEY')
 
 headers = {
    'Content-Type': 'application/json',

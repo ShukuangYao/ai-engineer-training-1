@@ -7,6 +7,7 @@ anyio==4.10.0
 attrs==25.3.0
 autogen-agentchat==0.7.2
 autogen-core==0.7.2
+autogen-ext[openai]
 banks==2.2.0
 beautifulsoup4==4.13.4
 certifi==2025.8.3
