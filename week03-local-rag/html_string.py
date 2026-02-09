@@ -1,3 +1,19 @@
+"""
+HTML 模板字符串模块
+
+包含两个 HTML 模板：
+1. main_html: 系统主页 HTML，提供导航和功能说明
+2. plain_html: 通用导航栏 HTML，用于各个页面的顶部导航
+
+设计特点：
+- 响应式设计，适配不同屏幕尺寸
+- 使用 Material Icons 提供图标支持
+- 支持深色模式（通过 CSS 媒体查询）
+- 简洁现代的 UI 风格
+"""
+
+# 系统主页 HTML 模板
+# 包含系统介绍、使用说明和导航链接
 main_html = """<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -82,6 +98,8 @@ main_html = """<!DOCTYPE html>
 </body>
 </html>"""
 
+# 通用导航栏 HTML 模板
+# 用于各个页面的顶部导航，提供快速访问各个功能模块的链接
 plain_html = """<!DOCTYPE html>
 <html lang="zh">
     <head>

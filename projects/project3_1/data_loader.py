@@ -6,7 +6,7 @@ import re
 from typing import List, Dict, Any
 
 from llama_index.core import Document, VectorStoreIndex, StorageContext, load_index_from_storage, Settings
-from llama_index.embeddings.dashscope import DashScopeEmbedding
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.dashscope import DashScope
 
 from config import settings
@@ -14,30 +14,29 @@ from config import settings
 
 class FAQDataLoader:
     """FAQ数据加载器"""
-    
+
     def __init__(self):
         """初始化"""
-        embed_model = DashScopeEmbedding(
-            model_name=settings.dashscope_embedding_model,
-            api_key=settings.dashscope_api_key,
-            dimension=settings.vector_dimension,
-            embed_batch_size=10  # DashScope API批处理大小限制为10
+        embed_model = HuggingFaceEmbedding(
+            model_name="BAAI/bge-m3",
+            device="cpu",  # 使用CPU模式
+            trust_remote_code=True
         )
         llm = DashScope(
-            model_name="qwen-plus",
+            model_name="deepseek-chat",
             api_key=settings.dashscope_api_key
         )
         Settings.embed_model = embed_model
         Settings.llm = llm
-    
+
     def parse_faq_file(self, file_path: str) -> List[Dict[str, Any]]:
         """解析FAQ文件"""
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        
+
         qa_pattern = r'Q:\s*(.*?)\s*A:\s*(.*?)(?=Q:|$)'
         matches = re.findall(qa_pattern, content, re.DOTALL)
-        
+
         faq_items = []
         for i, (question, answer) in enumerate(matches):
             faq_items.append({
@@ -45,9 +44,9 @@ class FAQDataLoader:
                 'question': question.strip(),
                 'answer': answer.strip()
             })
-        
+
         return faq_items
-    
+
     def create_documents(self, faq_items: List[Dict[str, Any]]) -> List[Document]:
         """创建文档对象"""
         documents = []
@@ -63,17 +62,17 @@ class FAQDataLoader:
             )
             documents.append(doc)
         return documents
-    
+
     def build_vector_index(self, documents: List[Document]) -> VectorStoreIndex:
         """构建向量索引"""
         index = VectorStoreIndex.from_documents(documents, show_progress=True)
         return index
-    
+
     def save_index(self, index: VectorStoreIndex, index_path: str):
         """保存索引"""
         os.makedirs(index_path, exist_ok=True)
         index.storage_context.persist(persist_dir=index_path)
-    
+
     def load_index(self, index_path: str = None) -> VectorStoreIndex:
         """加载索引"""
         if index_path is None:
@@ -81,11 +80,11 @@ class FAQDataLoader:
         storage_context = StorageContext.from_defaults(persist_dir=index_path)
         index = load_index_from_storage(storage_context)
         return index
-    
+
     def initialize_faq_system(self, force_rebuild: bool = False) -> VectorStoreIndex:
         """初始化FAQ系统"""
         index_path = settings.faiss_index_path
-        
+
         if force_rebuild or not os.path.exists(index_path):
             print("构建新的向量索引...")
             faq_items = self.parse_faq_file(settings.faq_file_path)
@@ -97,5 +96,5 @@ class FAQDataLoader:
         else:
             print("加载现有索引...")
             index = self.load_index(index_path)
-        
+
         return index

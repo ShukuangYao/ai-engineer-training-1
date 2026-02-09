@@ -3,7 +3,7 @@
 llama-index-core==0.10.68.post1
 llama-index-vector-stores-faiss==0.1.2
 llama-index-llms-dashscope
-llama-index-embeddings-dashscope
+llama-index-embeddings-huggingface
 dashscope
 
 # 向量数据库
@@ -15,6 +15,11 @@ langgraph
 # 数据处理
 pandas
 numpy
+
+# HuggingFace嵌入模型
+sentence-transformers>=2.2.0
+torch>=2.0.0
+transformers>=4.30.0
 
 # 日志和配置
 python-dotenv

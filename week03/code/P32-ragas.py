@@ -30,7 +30,7 @@ dataset = Dataset.from_dict(data_samples)
 score = evaluate(
     dataset=dataset,
     metrics=[answer_correctness],
-    llm=Tongyi(model_name="qwen-plus"),
-    embeddings=DashScopeEmbeddings(model="text-embedding-v3")
+    llm=Tongyi(model_name="deepseek-v3.2"),
+    embeddings=DashScopeEmbeddings(model="text-embedding-v4")
 )
 print(score.to_pandas())
