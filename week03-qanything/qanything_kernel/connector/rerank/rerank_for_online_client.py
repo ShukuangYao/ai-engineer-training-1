@@ -76,7 +76,7 @@ class YouDaoRerank:
 
         功能：
         - 向重排序服务发送异步 HTTP POST 请求
-        - 将查询和文档段落发送给重排序模型
+        - 将查询和文档段落发送给重排序模型/Users/leimao/Documents/study-code/ai-engineer-training/week03-qanything/qanything_kernel/dependent_server/rerank_server/
         - 获取每个文档段落的相关性分数
 
         重排序模型的工作原理：

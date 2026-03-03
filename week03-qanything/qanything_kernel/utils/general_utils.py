@@ -234,11 +234,17 @@ rerank_tokenizer = AutoTokenizer.from_pretrained(LOCAL_RERANK_PATH, local_files_
 
 def num_tokens_embed(text: str) -> int:
     """Return the number of tokens in a string."""
+    # 为了避免模型在处理特殊token时出错，这里添加add_special_tokens=True
+    # - Tokenizer 会在编码结果的开头添加 [CLS] 标记
+    # - 在两个句子之间添加 [SEP] 标记
+    # - 在序列末尾添加 [SEP] 标记（对于某些模型）
+    # 确保计算的 token 数量与模型实际处理的 token 数量一致
     return len(embedding_tokenizer.encode(text, add_special_tokens=True))
 
 
 def num_tokens_rerank(text: str) -> int:
     """Return the number of tokens in a string."""
+    # 为了避免模型在处理特殊token时出错，这里添加add_special_tokens=True
     return len(rerank_tokenizer.encode(text, add_special_tokens=True))
 
 
@@ -563,32 +569,62 @@ def fast_estimate_file_char_count(file_path):
 
 
 def replace_image_references(text, file_id):
+    """
+    替换文本中的图片引用为前端可访问的格式
+
+    Args:
+        text (str): 包含图片引用的文本内容
+        file_id (str): 文件ID，用于构建图片的访问路径
+
+    Returns:
+        str: 替换后的文本，其中图片引用被转换为前端可访问的格式
+    """
+    # 将文本按行分割
     lines = text.split('\n')
+    # 存储处理结果的列表
     result = []
 
-    # 匹配带标题的图片引用
+    # 匹配带标题的图片引用的正则表达式
+    # 格式：![figure](image.jpg 图片标题)
     pattern_with_caption = r'^!\[figure\]\((.+\.jpg)\s+(.+)\)$'
-    # 匹配不带标题的图片引用
+    # 匹配不带标题的图片引用的正则表达式
+    # 格式：![figure](image.jpg)
     pattern_without_caption = r'^!\[figure\]\((.+\.jpg)\)$'
 
+    # 遍历文本的每一行
     for line in lines:
+        # 如果不是图片引用，直接添加到结果中
         if not line.startswith('![figure]'):
             result.append(line)
             continue
 
+        # 尝试匹配带标题的图片引用
         match_with_caption = re.match(pattern_with_caption, line)
+        # 尝试匹配不带标题的图片引用
         match_without_caption = re.match(pattern_without_caption, line)
+
+        # 如果匹配到带标题的图片引用
         if match_with_caption:
+            # 提取图片路径和标题
             image_path, caption = match_with_caption.groups()
+            # 记录日志
             debug_logger.info(f"line: {line}, caption: {caption}")
+            # 添加标题（使用Markdown四级标题格式）
             result.append(f"#### {caption}")
+            # 添加转换后的图片引用，使用文件ID构建完整路径
             result.append(f"![figure](/qanything/assets/file_images/{file_id}/{image_path})")
+        # 如果匹配到不带标题的图片引用
         elif match_without_caption:
+            # 提取图片路径
             image_path = match_without_caption.group(1)
+            # 添加转换后的图片引用，使用文件ID构建完整路径
             result.append(f"![figure](/qanything/assets/file_images/{file_id}/{image_path})")
+        # 如果既不是带标题也不是不带标题的图片引用
         else:
+            # 直接添加到结果中
             result.append(line)
 
+    # 将处理后的行重新组合为文本
     return '\n'.join(result)
 
 def check_and_transform_excel(binary_data):

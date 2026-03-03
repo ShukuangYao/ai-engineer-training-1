@@ -49,25 +49,48 @@ class OpenAILLM:
 
     # 定义函数 num_tokens_from_messages，该函数返回由一组消息所使用的token数
     def num_tokens_from_messages(self, messages):
+        """
+        计算消息列表的 token 数量
+
+        Args:
+            messages: 消息列表，元素可以是字典或字符串
+
+        Returns:
+            int: 计算得到的 token 数量（包含余量）
+        """
+        # 初始化总 token 数为 0
         total_tokens = 0
+
+        # 遍历消息列表中的每个消息
         for message in messages:
             if isinstance(message, dict):
-                # 对于字典类型的消息，我们假设它包含 'role' 和 'content' 键
+                # 对于字典类型的消息，假设它包含 'role' 和 'content' 键
                 for key, value in message.items():
+                    # 每个键（如 'role'）的开销为 3 token
                     total_tokens += 3  # role的开销(key的开销)
+                    # 如果值是字符串类型，计算其 token 数
                     if isinstance(value, str):
+                        # 使用 tokenizer 编码字符串并计算 token 数
                         tokens = self.tokenizer.encode(value, disallowed_special=())
                         total_tokens += len(tokens)
             elif isinstance(message, str):
-                # 对于字符串类型的消息，直接编码
+                # 对于字符串类型的消息，直接编码计算 token 数
                 tokens = self.tokenizer.encode(message, disallowed_special=())
                 total_tokens += len(tokens)
             else:
+                # 不支持的消息类型，抛出异常
                 raise ValueError(f"Unsupported message type: {type(message)}")
+
+        # 根据使用的 tokenizer 类型添加不同比例的余量
         if self.use_cl100k_base:
+            # 使用 cl100k_base tokenizer 时，添加 20% 的余量
             total_tokens *= 1.2
         else:
-            total_tokens *= 1.1  # 保留一定余量，由于metadata信息的嵌入导致token比计算的会多一些
+            # 使用其他 tokenizer 时，添加 10% 的余量
+            # 保留一定余量，由于metadata信息的嵌入导致token比计算的会多一些
+            total_tokens *= 1.1
+
+        # 返回整数形式的 token 数
         return int(total_tokens)
 
     def num_tokens_from_docs(self, docs):
@@ -133,46 +156,79 @@ class OpenAILLM:
     async def generatorAnswer(self, prompt: str,
                               history: List[List[str]] = [],
                               streaming: bool = False) -> AnswerResult:
+        """
+        生成 LLM 回答，支持流式输出
 
+        Args:
+            prompt (str): 提示文本，包含用户问题和相关上下文
+            history (List[List[str]]): 对话历史，格式为 [[问题1, 回答1], [问题2, 回答2], ...]
+            streaming (bool): 是否启用流式输出
+
+        Returns:
+            AnswerResult: 包含回答、历史记录和 token 使用情况的结果对象
+        """
+        # 处理对话历史
+        # 如果历史记录为空或 None，初始化一个空的历史记录
         if history is None or len(history) == 0:
             history = [[]]
         else:
+            # 为当前对话添加一个新的空条目
             history.append([])
-        # debug_logger.info(f"history_len: {self.history_len}")
-        # debug_logger.info(f"prompt: {prompt}")
-        debug_logger.info(f"prompt tokens: {self.num_tokens_from_messages([{'content': prompt}])}")
-        # debug_logger.info(f"streaming: {streaming}")
 
+        # 记录 prompt 的 token 数
+        debug_logger.info(f"prompt tokens: {self.num_tokens_from_messages([{'content': prompt}])}")
+
+        # 构建消息列表
+        # 消息格式遵循 OpenAI API 的要求
         messages = []
+        # 遍历历史记录（除了最后一个空条目）
         for pair in history[:-1]:
             question, answer = pair
+            # 添加用户消息
             messages.append({"role": "user", "content": question})
+            # 添加助手消息
             messages.append({"role": "assistant", "content": answer})
+        # 添加当前的用户提示
         messages.append({"role": "user", "content": prompt})
-        # debug_logger.info(messages)
-        prompt_tokens = self.num_tokens_from_messages(messages)
-        total_tokens = 0
-        completion_tokens = 0
 
+        # 计算 prompt 的 token 数
+        prompt_tokens = self.num_tokens_from_messages(messages)
+        total_tokens = 0  # 总 token 数
+        completion_tokens = 0  # 完成部分的 token 数
+
+        # 调用底层方法获取响应
         response = self._call(messages, streaming)
-        complete_answer = ""
+        complete_answer = ""  # 累积的完整回答
+
+        # 异步迭代流式响应
         async for response_text in response:
             if response_text:
+                # 去除响应前缀 'data: '
                 chunk_str = response_text[6:]
+                # 如果不是结束标记
                 if not chunk_str.startswith("[DONE]"):
+                    # 解析 JSON 响应
                     chunk_js = json.loads(chunk_str)
+                    # 累积回答内容
                     complete_answer += chunk_js["answer"]
+                # 计算完成部分的 token 数
                 completion_tokens = self.num_tokens_from_messages([complete_answer])
+                # 计算总 token 数
                 total_tokens = prompt_tokens + completion_tokens
 
+            # 更新对话历史中的最后一个条目
             history[-1] = [prompt, complete_answer]
+
+            # 创建 AnswerResult 对象
             answer_result = AnswerResult()
-            answer_result.history = history
-            answer_result.llm_output = {"answer": response_text}
-            answer_result.prompt = prompt
-            answer_result.total_tokens = total_tokens
-            answer_result.completion_tokens = completion_tokens
-            answer_result.prompt_tokens = prompt_tokens
+            answer_result.history = history  # 更新后的对话历史
+            answer_result.llm_output = {"answer": response_text}  # LLM 的原始输出
+            answer_result.prompt = prompt  # 用户的提示
+            answer_result.total_tokens = total_tokens  # 总 token 数
+            answer_result.completion_tokens = completion_tokens  # 完成部分的 token 数
+            answer_result.prompt_tokens = prompt_tokens  # 提示的 token 数
+
+            # 生成响应
             yield answer_result
 
 

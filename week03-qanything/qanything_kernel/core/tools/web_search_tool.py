@@ -56,7 +56,10 @@ def duckduckgo_search(query: str, top_k: int):
     for i, doc in enumerate(docs_transformed):
         title_content = results[i]["title"]
         search_contents.append(f">>>>>>>>>>>>>>>>>>>>以下是标题为<h1>{title_content}</h1>的网页内容\n{doc.page_content}\n<<<<<<<<<<<<<<<<<以上是标题为<h1>{title_content}</h1>的网页内容\n")
-    return "\n\n".join([doc for doc in search_contents]), docs_transformed
+    content = "\n\n".join([doc for doc in search_contents])
+    print(f"content: {content}")
+    print(f"docs_transformed: {docs_transformed}")
+    return content, docs_transformed
     #return ", ".join([res["snippet"] for res in results])
 
 web_search_tool = StructuredTool.from_function(

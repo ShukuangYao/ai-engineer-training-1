@@ -583,38 +583,61 @@ class KnowledgeBaseManager:
         self.execute_query_(query, (faq_id, user_id, kb_id, question, answer, nos_keys), commit=True)
 
     def get_document_by_file_id(self, file_id, batch_size=100) -> Optional[List]:
-        # 初始化结果列表
+        """
+        根据文件ID从MySQL数据库中获取该文件的所有文档分块。
+
+        Args:
+            file_id: 文件ID
+            batch_size: 批量查询的大小，默认为100
+
+        Returns:
+            排序后的文档分块列表，如果没有找到则返回None
+        """
+        # 初始化结果列表，用于存储所有文档分块
         all_json_datas = []
 
-        # 搜索doc_id中包含file_id的所有Doc
+        # 构建SQL查询语句，搜索doc_id中包含指定file_id的所有文档
         query = "SELECT doc_id, json_data FROM Documents WHERE doc_id LIKE %s"
+        # 初始化偏移量，用于分页查询
         offset = 0
 
+        # 循环执行分页查询，直到没有更多数据
         while True:
-            # 执行带有LIMIT和OFFSET的查询语句
+            # 构建带有LIMIT和OFFSET的分页查询语句
             paginated_query = f"{query} LIMIT %s OFFSET %s"
+            # 执行查询，参数为：file_id前缀、批量大小、偏移量
             doc_all = self.execute_query_(paginated_query, (f"{file_id}_%", batch_size, offset), fetch=True)
 
+            # 如果没有更多数据，跳出循环
             if not doc_all:
-                break  # 如果没有更多数据，跳出循环
+                break
 
+            # 提取文档ID的数字部分（去掉file_id前缀）
             doc_ids = [doc[0].split('_')[1] for doc in doc_all]
+            # 解析JSON数据
             json_datas = [json.loads(doc[1]) for doc in doc_all]
+            # 为每个文档设置chunk_id
             for doc_id, json_data in zip(doc_ids, json_datas):
                 json_data['kwargs']['chunk_id'] = file_id + '_' + str(doc_id)
 
-            # 将doc_id和json_data打包并追加到结果列表
+            # 将文档ID和JSON数据打包并追加到结果列表
             all_json_datas.extend(zip(doc_ids, json_datas))
 
-            offset += batch_size  # 更新offset
+            # 更新偏移量，准备下一批查询
+            offset += batch_size
 
+        # 记录查询结果信息
         debug_logger.info(f"get_document: file_id: {file_id}, mysql parent documents res: {len(all_json_datas)}")
+
+        # 如果找到文档
         if all_json_datas:
-            # 对所有数据进行排序
+            # 根据文档ID的数字部分进行排序
             all_json_datas.sort(key=lambda x: int(x[0]))
-            # 解压排序后的结果
+            # 解压排序后的结果，只保留JSON数据
             sorted_json_datas = [json_data for _, json_data in all_json_datas]
             return sorted_json_datas
+
+        # 如果没有找到文档，返回None
         return None
 
     def get_document_by_doc_id(self, doc_id) -> Optional[Dict]:
