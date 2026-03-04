@@ -217,4 +217,4 @@ __marimo__/
 week02/requirements.txt
 week02/uv.lock
 
-week03-homework-2/milvus_faq/volumes
+week03-homework-2/*/volumes

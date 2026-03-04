@@ -1,0 +1,9 @@
+neo4j==5.15.0
+llama-index==0.8.39
+openai
+nest-asyncio
+tiktoken
+numpy==1.24.4
+packaging>=21.3
+langchain==0.0.335
+langchain-core==0.0.10
