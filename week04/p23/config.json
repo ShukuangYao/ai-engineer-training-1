@@ -1,7 +1,7 @@
 {
   "intents": [
     "query_order",
-    "refund_request", 
+    "refund_request",
     "issue_invoice",
     "logistics_inquiry",
     "cancel_order",
@@ -20,13 +20,13 @@
   },
   "ml_model": {
     "model_name": "qwen-turbo",
-    "api_key": "your_dashscope_api_key_here",
-    "base_url": "https://dashscope.aliyuncs.com/api/v1"
+    "api_key": "",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
   },
   "llm": {
     "model": "qwen-plus",
     "temperature": 0,
-    "api_key": "your_dashscope_api_key_here",
+    "api_key": "",
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
   }
 }

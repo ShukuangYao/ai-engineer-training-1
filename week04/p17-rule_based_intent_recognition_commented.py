@@ -22,8 +22,15 @@
 """
 
 import re
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, TypedDict
 from dataclasses import dataclass
+
+try:
+    from langgraph.graph import StateGraph, START, END
+    _LANGGRAPH_AVAILABLE = True
+except ImportError:
+    _LANGGRAPH_AVAILABLE = False
+    StateGraph = START = END = None
 
 @dataclass
 class IntentResult:
@@ -565,6 +572,53 @@ class FSMProcessor:
             }
         }
         self.current_state = 'start'  # 初始状态设为开始状态
+        # 集成意图识别链 (复用 RegexIntentParser + KeywordIntentParser + SlotExtractor)
+        self.intent_chain = RuleBasedIntentChain()
+        # 意图类型到状态机状态的映射
+        self._intent_to_state = {
+            'query_order': 'order_query',
+            'refund': 'refund_request',
+            'issue_invoice': 'invoice_request'
+        }
+        # 子状态触发关键词: 当前状态 -> [ (关键词列表, 下一状态) ]，按步推进直至完成
+        self._substate_triggers = {
+            'order_query': [
+                (['物流', '快递', '发货', '到了吗'], 'logistics_query'),
+                (['详情', '订单详情', '具体'], 'order_detail'),
+            ],
+            'refund_request': [
+                (['原因', '因为', '理由'], 'refund_reason'),
+                (['确认', '好的', '同意', '可以'], 'refund_confirm'),
+            ],
+            'refund_reason': [
+                (['确认', '好的', '同意', '可以', '提交'], 'refund_confirm'),
+            ],
+            'invoice_request': [
+                (['详情', '抬头', '金额', '元'], 'invoice_detail'),
+                (['确认', '好的', '同意', '开吧'], 'invoice_confirm'),
+            ],
+            'invoice_detail': [
+                (['确认', '好的', '同意', '开吧'], 'invoice_confirm'),
+            ],
+        }
+        # 流程终点状态：进入后表示该意图已完成，下一轮将重置为 start
+        self._done_states = ('order_done', 'refund_done', 'invoice_done')
+        # 每步的引导话术（系统应说的下一句，引导用户完成当前意图）
+        self._state_prompts = {
+            'start': '',
+            'order_query': '请问您要查询订单详情还是物流信息？',
+            'order_detail': '已为您查询订单详情。',
+            'logistics_query': '已为您查询到物流信息。',
+            'order_done': '订单查询已完成，如需其他帮助请继续说。',
+            'refund_request': '请提供退款原因或订单号，也可直接说「确认」提交申请。',
+            'refund_reason': '请确认是否提交退款申请？',
+            'refund_confirm': '已收到您的确认。',
+            'refund_done': '您的退款申请已提交，请等待审核。',
+            'invoice_request': '请提供开票金额或抬头，也可直接说「开吧」确认开票。',
+            'invoice_detail': '请确认是否按上述信息开票？',
+            'invoice_confirm': '已收到您的确认。',
+            'invoice_done': '发票将按您填写的信息开具并发送。',
+        }
     
     def process(self, text: str, context: Dict = None) -> Optional[IntentResult]:
         """
@@ -590,18 +644,341 @@ class FSMProcessor:
         - 集成上下文信息管理
         - 支持状态回退和异常处理
         """
-        # 当前为简化实现，返回None表示不参与意图识别
-        # 在实际项目中，这里可以实现复杂的多轮对话状态管理逻辑
-        
-        # 示例扩展思路:
-        # if self.current_state == 'start':
-        #     # 根据用户输入决定进入哪个业务状态
-        #     pass
-        # elif self.current_state == 'order_query':
-        #     # 处理订单查询相关的后续交互
-        #     pass
-        
+        context = context if context is not None else {}
+        # 累积槽位：跨轮次合并
+        if "slots" not in context:
+            context["slots"] = {}
+        # 上一轮已到达流程终点则重置，以便本轮从 start 开始新意图
+        if self.current_state in self._done_states:
+            self.current_state = 'start'
+
+        # 使用意图识别链得到基础意图与槽位
+        chain_result = self.intent_chain.invoke({"text": text})
+        intent = chain_result["intent"]
+        confidence = chain_result["confidence"]
+        slots = chain_result.get("slots", {})
+        context["slots"].update(slots)
+        matched_rules = chain_result.get("matched_rules", [])
+        extracted_entities = chain_result.get("extracted_entities")
+        context["is_completed"] = False
+        context["next_prompt"] = ""
+
+        # 1. 当前在 start：根据识别出的意图做状态转换
+        if self.current_state == 'start':
+            if intent == "unknown":
+                context["next_prompt"] = "请问您需要什么帮助？可以查订单、申请退款或开发票。"
+                return IntentResult()
+            next_state = self._intent_to_state.get(intent)
+            if next_state and next_state in self.states:
+                self.current_state = next_state
+            context["current_state"] = self.current_state
+            context["next_prompt"] = self._state_prompts.get(self.current_state, "")
+            return IntentResult(
+                intent=intent,
+                confidence=confidence,
+                matched_rules=matched_rules,
+                extracted_entities=extracted_entities
+            )
+
+        # 2. 当前在业务状态：先检查是否命中子状态触发词，一步步推进
+        _substates_of = {
+            'order_query': ['order_detail', 'logistics_query'],
+            'refund_request': ['refund_reason', 'refund_confirm'],
+            'invoice_request': ['invoice_detail', 'invoice_confirm'],
+        }
+        if self.current_state in self._substate_triggers:
+            for keywords, sub_state in self._substate_triggers[self.current_state]:
+                if any(kw in text for kw in keywords):
+                    self.current_state = sub_state
+                    context["current_state"] = self.current_state
+                    # 订单：进入详情/物流即视为可返回结果，本步完成
+                    if sub_state in ('logistics_query', 'order_detail'):
+                        self.current_state = 'order_done'
+                        context["current_state"] = 'order_done'
+                        context["is_completed"] = True
+                        context["next_prompt"] = self._state_prompts.get('order_done', '')
+                    # 退款：进入确认态且用户说确认 → 流程完成
+                    elif sub_state == 'refund_confirm':
+                        if any(k in text for k in ['确认', '好的', '同意', '可以']):
+                            self.current_state = 'refund_done'
+                            context["current_state"] = 'refund_done'
+                            context["is_completed"] = True
+                            context["next_prompt"] = self._state_prompts.get('refund_done', '')
+                        else:
+                            context["next_prompt"] = self._state_prompts.get('refund_confirm', '')
+                    # 开票：进入确认态且用户说确认/开吧 → 流程完成
+                    elif sub_state == 'invoice_confirm':
+                        if any(k in text for k in ['确认', '好的', '同意', '开吧']):
+                            self.current_state = 'invoice_done'
+                            context["current_state"] = 'invoice_done'
+                            context["is_completed"] = True
+                            context["next_prompt"] = self._state_prompts.get('invoice_done', '')
+                        else:
+                            context["next_prompt"] = self._state_prompts.get('invoice_confirm', '')
+                    else:
+                        context["next_prompt"] = self._state_prompts.get(sub_state, '')
+                    break
+            else:
+                # 未命中子状态触发词，仅引导下一步
+                context["next_prompt"] = self._state_prompts.get(self.current_state, '')
+        else:
+            context["next_prompt"] = self._state_prompts.get(self.current_state, '')
+
+        context["current_state"] = self.current_state
+        # 用户表达新主意图时切换到对应状态；若当前已是该意图下的子状态则不覆盖
+        if intent != "unknown" and intent in self._intent_to_state:
+            new_state = self._intent_to_state[intent]
+            if new_state in self.states and new_state != self.current_state:
+                if self.current_state not in _substates_of.get(new_state, []):
+                    self.current_state = new_state
+                    context["current_state"] = self.current_state
+                    context["next_prompt"] = self._state_prompts.get(self.current_state, '')
+
+        return IntentResult(
+            intent=intent,
+            confidence=confidence,
+            matched_rules=matched_rules,
+            extracted_entities=extracted_entities
+        )
+
+    def reset(self) -> None:
+        """将状态机重置为初始状态 start，用于新会话或重新开始流程。"""
+        self.current_state = 'start'
+
+
+# =============================================================================
+# LangGraph 多节点意图流程（可选，需安装 langgraph）
+# =============================================================================
+# 将上述状态机改造成 LangGraph 的 StateGraph：多节点 + 条件边，每节点只做一件事，
+# 通过图结构表达「意图识别 → 按意图路由 → 各业务流节点 → 结束」。
+# =============================================================================
+
+class IntentGraphState(TypedDict, total=False):
+    """LangGraph 图状态：在节点间传递的共享状态。"""
+    text: str
+    intent: str
+    confidence: float
+    slots: Dict[str, str]
+    current_node: str
+    next_prompt: str
+    is_completed: bool
+    matched_rules: List[str]
+    extracted_entities: Optional[tuple]
+
+
+def _build_intent_graph():
+    """
+    构建 LangGraph 意图识别与流程图。
+    节点：intent_recognizer → 条件路由 → order_flow | refund_flow | invoice_flow | start_unknown → END
+    """
+    if not _LANGGRAPH_AVAILABLE:
         return None
+    chain = RuleBasedIntentChain()
+    intent_to_node = {"query_order": "order_query", "refund": "refund_request", "issue_invoice": "invoice_request"}
+    done_states = {"order_done", "refund_done", "invoice_done"}
+    state_prompts = {
+        "start": "",
+        "order_query": "请问您要查询订单详情还是物流信息？",
+        "order_detail": "已为您查询订单详情。",
+        "logistics_query": "已为您查询到物流信息。",
+        "order_done": "订单查询已完成，如需其他帮助请继续说。",
+        "refund_request": "请提供退款原因或订单号，也可直接说「确认」提交申请。",
+        "refund_reason": "请确认是否提交退款申请？",
+        "refund_confirm": "已收到您的确认。",
+        "refund_done": "您的退款申请已提交，请等待审核。",
+        "invoice_request": "请提供开票金额或抬头，也可直接说「开吧」确认开票。",
+        "invoice_detail": "请确认是否按上述信息开票？",
+        "invoice_confirm": "已收到您的确认。",
+        "invoice_done": "发票将按您填写的信息开具并发送。",
+    }
+    substate_triggers = {
+        "order_query": [
+            (["物流", "快递", "发货", "到了吗"], "logistics_query"),
+            (["详情", "订单详情", "具体"], "order_detail"),
+        ],
+        "refund_request": [
+            (["原因", "因为", "理由"], "refund_reason"),
+            (["确认", "好的", "同意", "可以"], "refund_confirm"),
+        ],
+        "refund_reason": [
+            (["确认", "好的", "同意", "可以", "提交"], "refund_confirm"),
+        ],
+        "invoice_request": [
+            (["详情", "抬头", "金额", "元"], "invoice_detail"),
+            (["确认", "好的", "同意", "开吧"], "invoice_confirm"),
+        ],
+        "invoice_detail": [
+            (["确认", "好的", "同意", "开吧"], "invoice_confirm"),
+        ],
+    }
+    substates_of = {
+        "order_query": ["order_detail", "logistics_query"],
+        "refund_request": ["refund_reason", "refund_confirm"],
+        "invoice_request": ["invoice_detail", "invoice_confirm"],
+    }
+    confirm_words = ["确认", "好的", "同意", "可以", "开吧", "提交"]
+
+    def intent_recognizer_node(state: IntentGraphState) -> IntentGraphState:
+        """节点：意图识别 + 若在完成态则重置，若在 start 则按意图进入业务节点。"""
+        text = state.get("text", "")
+        current = state.get("current_node", "start")
+        slots = dict(state.get("slots") or {})
+        if current in done_states:
+            current = "start"
+        result = chain.invoke({"text": text})
+        slots.update(result.get("slots", {}))
+        intent = result["intent"]
+        confidence = result["confidence"]
+        matched_rules = list(result.get("matched_rules") or [])
+        extracted_entities = result.get("extracted_entities")
+        next_node = current
+        if current == "start" and intent != "unknown":
+            next_node = intent_to_node.get(intent, "start")
+        return {
+            "intent": intent,
+            "confidence": confidence,
+            "slots": slots,
+            "current_node": next_node,
+            "matched_rules": matched_rules,
+            "extracted_entities": extracted_entities,
+            "next_prompt": "",
+            "is_completed": False,
+        }
+
+    def route_after_intent(state: IntentGraphState) -> str:
+        """条件路由：根据 current_node / intent 进入对应业务流节点。"""
+        node = state.get("current_node", "start")
+        intent = state.get("intent", "unknown")
+        if node.startswith("order") or intent == "query_order":
+            return "order_flow"
+        if node.startswith("refund") or intent == "refund":
+            return "refund_flow"
+        if node.startswith("invoice") or intent == "issue_invoice":
+            return "invoice_flow"
+        return "start_unknown"
+
+    def run_substate_triggers(text: str, current: str, triggers: dict) -> tuple:
+        """根据当前节点和用户输入返回 (下一节点, 是否完成, 完成态名)."""
+        if current not in triggers:
+            return current, False, None
+        for keywords, sub in triggers[current]:
+            if any(kw in text for kw in keywords):
+                if sub in ("logistics_query", "order_detail"):
+                    return "order_done", True, "order_done"
+                if sub == "refund_confirm" and any(c in text for c in confirm_words):
+                    return "refund_done", True, "refund_done"
+                if sub == "invoice_confirm" and any(c in text for c in confirm_words):
+                    return "invoice_done", True, "invoice_done"
+                return sub, False, None
+        return current, False, None
+
+    def order_flow_node(state: IntentGraphState) -> IntentGraphState:
+        """节点：订单查询流（order_query → logistics/order_detail → order_done）."""
+        text = state.get("text", "")
+        current = state.get("current_node", "order_query")
+        next_node, completed, _ = run_substate_triggers(text, current, substate_triggers)
+        prompt = state_prompts.get(next_node, "")
+        return {"current_node": next_node, "next_prompt": prompt, "is_completed": completed}
+
+    def refund_flow_node(state: IntentGraphState) -> IntentGraphState:
+        """节点：退款流（refund_request → refund_reason? → refund_confirm → refund_done）."""
+        text = state.get("text", "")
+        current = state.get("current_node", "refund_request")
+        next_node, completed, _ = run_substate_triggers(text, current, substate_triggers)
+        prompt = state_prompts.get(next_node, "")
+        return {"current_node": next_node, "next_prompt": prompt, "is_completed": completed}
+
+    def invoice_flow_node(state: IntentGraphState) -> IntentGraphState:
+        """节点：开票流（invoice_request → invoice_detail? → invoice_confirm → invoice_done）."""
+        text = state.get("text", "")
+        current = state.get("current_node", "invoice_request")
+        next_node, completed, _ = run_substate_triggers(text, current, substate_triggers)
+        prompt = state_prompts.get(next_node, "")
+        return {"current_node": next_node, "next_prompt": prompt, "is_completed": completed}
+
+    def start_unknown_node(state: IntentGraphState) -> IntentGraphState:
+        """节点：未识别意图时的引导。"""
+        return {
+            "next_prompt": "请问您需要什么帮助？可以查订单、申请退款或开发票。",
+            "is_completed": False,
+        }
+
+    workflow = StateGraph(IntentGraphState)
+    workflow.add_node("intent_recognizer", intent_recognizer_node)
+    workflow.add_node("order_flow", order_flow_node)
+    workflow.add_node("refund_flow", refund_flow_node)
+    workflow.add_node("invoice_flow", invoice_flow_node)
+    workflow.add_node("start_unknown", start_unknown_node)
+    workflow.add_edge(START, "intent_recognizer")
+    workflow.add_conditional_edges("intent_recognizer", route_after_intent, {
+        "order_flow": "order_flow",
+        "refund_flow": "refund_flow",
+        "invoice_flow": "invoice_flow",
+        "start_unknown": "start_unknown",
+    })
+    workflow.add_edge("order_flow", END)
+    workflow.add_edge("refund_flow", END)
+    workflow.add_edge("invoice_flow", END)
+    workflow.add_edge("start_unknown", END)
+    return workflow.compile()
+
+
+# 全局图实例（懒加载）
+_intent_graph = None
+
+
+def get_intent_graph():
+    """获取或构建 LangGraph 意图图（需已安装 langgraph）。"""
+    global _intent_graph
+    if _intent_graph is None:
+        _intent_graph = _build_intent_graph()
+    return _intent_graph
+
+
+class LangGraphIntentProcessor:
+    """
+    基于 LangGraph 多节点的意图处理器。
+    与 FSMProcessor 同效：process(text, context) 返回 IntentResult，context 中写入 current_state / next_prompt / is_completed。
+    内部通过 StateGraph 多节点（意图识别 → 条件路由 → 各业务流节点）实现。
+    """
+
+    def __init__(self):
+        self._graph = get_intent_graph()
+        self._state: Optional[IntentGraphState] = None
+
+    def process(self, text: str, context: Dict = None) -> Optional[IntentResult]:
+        if self._graph is None:
+            if context is not None:
+                context["next_prompt"] = "未安装 langgraph，请 pip install langgraph 后使用 LangGraph 模式。"
+            return None
+        context = context if context is not None else {}
+        if "slots" not in context:
+            context["slots"] = {}
+        prev = self._state or {}
+        if prev.get("current_node") in ("order_done", "refund_done", "invoice_done"):
+            prev = {}
+        inp: IntentGraphState = {
+            "text": text,
+            "current_node": prev.get("current_node", "start"),
+            "slots": dict(prev.get("slots") or {}),
+        }
+        out = self._graph.invoke(inp)
+        self._state = out
+        context["current_state"] = out.get("current_node", "start")
+        context["next_prompt"] = out.get("next_prompt") or ""
+        context["is_completed"] = out.get("is_completed", False)
+        context["slots"].update(out.get("slots") or {})
+        intent = out.get("intent", "unknown")
+        return IntentResult(
+            intent=intent,
+            confidence=float(out.get("confidence", 0)),
+            matched_rules=list(out.get("matched_rules") or []),
+            extracted_entities=out.get("extracted_entities"),
+        )
+
+    def reset(self) -> None:
+        self._state = None
+
 
 def main():
     """
@@ -682,6 +1059,72 @@ def main():
     for text, result in zip(batch_texts, batch_results):
         print(f"{text} -> {result['intent']} (置信度: {result['confidence']:.2f})")
     
+    # 状态机：一步步推进直至完成用户意图
+    print("\n状态机 (FSM) 按步推进直至完成:")
+    print("=" * 80)
+    fsm = FSMProcessor()
+    # 演示 1：退款流程完整走完 (退款 -> 说明原因 -> 确认 -> 完成)
+    refund_flow = [
+        "我要退款",
+        "因为商品有质量问题",
+        "确认提交",
+    ]
+    ctx = {}
+    for i, text in enumerate(refund_flow, 1):
+        result = fsm.process(text, context=ctx)
+        print(f"  [{i}] 用户: {text}")
+        print(f"      状态: {ctx.get('current_state', '')} | 意图: {result.intent if result else 'unknown'}")
+        prompt = ctx.get("next_prompt") or ""
+        if prompt:
+            print(f"      系统: {prompt}")
+        if ctx.get("is_completed"):
+            print("      >>> 本意图已完成，下一轮将重置为 start")
+        print("-" * 80)
+    # 演示 2：订单查询 (查订单 -> 说查物流 -> 完成)
+    print("\n订单查询流程:")
+    print("-" * 80)
+    ctx = {}
+    for text in ["查一下订单123456", "查一下物流"]:
+        result = fsm.process(text, context=ctx)
+        print(f"  用户: {text}")
+        print(f"      状态: {ctx.get('current_state', '')}")
+        if ctx.get("next_prompt"):
+            print(f"      系统: {ctx['next_prompt']}")
+        if ctx.get("is_completed"):
+            print("      >>> 订单查询已完成")
+        print("-" * 80)
+    # 演示 3：开票流程 (开票 -> 填金额 -> 确认 -> 完成)
+    print("\n开票流程:")
+    print("-" * 80)
+    ctx = {}
+    for text in ["帮我开发票", "开1000元的", "开吧"]:
+        result = fsm.process(text, context=ctx)
+        print(f"  用户: {text}")
+        print(f"      状态: {ctx.get('current_state', '')}")
+        if ctx.get("next_prompt"):
+            print(f"      系统: {ctx['next_prompt']}")
+        if ctx.get("is_completed"):
+            print("      >>> 开票流程已完成")
+        print("-" * 80)
+
+    # LangGraph 多节点模式演示（需安装 langgraph）
+    if _LANGGRAPH_AVAILABLE:
+        print("\nLangGraph 多节点意图流程演示:")
+        print("=" * 80)
+        lg = LangGraphIntentProcessor()
+        ctx = {}
+        for i, text in enumerate(["我要退款", "因为不合适", "确认提交"], 1):
+            result = lg.process(text, context=ctx)
+            print(f"  [{i}] 用户: {text}")
+            print(f"      状态: {ctx.get('current_state', '')} | 意图: {result.intent if result else 'unknown'}")
+            if ctx.get("next_prompt"):
+                print(f"      系统: {ctx['next_prompt']}")
+            if ctx.get("is_completed"):
+                print("      >>> 本意图已完成")
+            print("-" * 80)
+    else:
+        print("\n(LangGraph 未安装，跳过多节点图演示；pip install langgraph 可启用)")
+
     print("\n" + "=" * 80)
     print("系统特性总结:")
     print("1. 多策略融合: 正则匹配 + 关键词匹配")
@@ -690,6 +1133,9 @@ def main():
     print("4. 可解释性: 提供详细的推理过程")
     print("5. 兜底机制: 未知输入的优雅处理")
     print("6. 模块化设计: LangChain 风格的组件架构")
+    print("7. 状态机: 按步推进直至完成用户意图，支持完成态重置")
+    if _LANGGRAPH_AVAILABLE:
+        print("8. LangGraph: 多节点图（意图识别→路由→order/refund/invoice 流节点）")
 
 if __name__ == "__main__":
     main()

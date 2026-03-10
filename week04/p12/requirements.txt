@@ -1,9 +1,7 @@
 # vLLM 自定义封装器依赖包
 
 # 核心依赖
-langchain-core>=0.3.0
 langchain>=0.3.0
-vllm>=0.6.0
 
 # 数据处理
 pydantic>=2.0.0
@@ -15,7 +13,7 @@ aiohttp>=3.8.0
 
 # 工具库
 numpy>=1.21.0
-torch>=2.0.0
+requests>=2.26.0
 
 # 可选依赖 (用于特定功能)
 # transformers>=4.30.0  # 如果需要使用 HuggingFace 模型
@@ -26,3 +24,7 @@ torch>=2.0.0
 # pytest>=7.0.0        # 用于测试
 # black>=23.0.0         # 代码格式化
 # flake8>=6.0.0         # 代码检查
+
+# 平台兼容性说明
+# - 在 Linux 上：可以安装 vllm>=0.6.0 以使用实际的 vLLM 服务
+# - 在 macOS 上：自动使用模拟模式，无需安装 vLLM

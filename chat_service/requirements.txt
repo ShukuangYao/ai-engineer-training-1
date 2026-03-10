@@ -1,0 +1,35 @@
+# FastAPI 相关
+fastapi==0.116.1
+uvicorn==0.35.0
+python-multipart==0.0.20
+
+# LangChain 0.3 核心包
+langchain==0.3.27
+langchain-core==0.3.75
+langchain-community==0.3.29
+
+# 通义千问支持
+dashscope==1.22.2
+
+# 数据处理
+pydantic==2.11.7
+pydantic-settings==2.10.1
+
+# HTTP 客户端
+httpx==0.28.1
+requests==2.32.5
+
+# 异步支持
+aiofiles==24.1.0
+anyio==4.10.0
+
+# 日志和监控
+python-dotenv==1.1.1
+
+# 可选：如果需要其他 LLM 支持
+# langchain-openai==0.3.32  # OpenAI 支持
+# langchain-deepseek==0.1.4  # DeepSeek 支持
+
+# 开发和测试工具（可选）
+pytest==8.3.4
+pytest-asyncio==0.25.0
