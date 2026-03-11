@@ -36,6 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 vllm = ["vllm"]
+dev = ["pytest", "httpx"]
 
 [tool.setuptools]
 packages = ["p11", "p12"]

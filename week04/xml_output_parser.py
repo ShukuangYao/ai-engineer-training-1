@@ -1,6 +1,17 @@
 from langchain_core.output_parsers import BaseOutputParser
 from typing import Dict, Any
 import xml.etree.ElementTree as ET
+import os
+import warnings
+import logging
+
+# 屏蔽依赖库的警告与日志（在导入 langchain_community 前生效）
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+warnings.filterwarnings("ignore", message=".*pytree.*deprecated.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*_register_pytree_node.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*PyTorch.*TensorFlow.*Flax.*", category=UserWarning)
+for _name in ("transformers", "transformers.utils", "transformers.utils.generic"):
+    logging.getLogger(_name).setLevel(logging.ERROR)
 
 class XMLOutputParser(BaseOutputParser[Dict[str, Any]]):
     """将 XML 字符串解析为字典的输出解析器"""
@@ -87,24 +98,38 @@ class XMLOutputParser(BaseOutputParser[Dict[str, Any]]):
 
 # 测试示例
 if __name__ == "__main__":
-    from langchain_community.llms import Tongyi
-    from langchain_core.prompts import PromptTemplate
-    
-    # 初始化组件
-    parser = XMLOutputParser()
-    llm = Tongyi(temperature=0)
-    
-    # 创建提示模板
-    prompt = PromptTemplate(
-        template="请提供关于{topic}的信息，包括定义、特点和应用。\n{format_instructions}",
-        input_variables=["topic"],
-        partial_variables={"format_instructions": parser.get_format_instructions()}
-    )
-    
-    # 创建链
-    chain = prompt | llm | parser
-    
-    # 测试
-    result = chain.invoke({"topic": "人工智能"})
+    import sys
+
+    # 依赖库可能直接写 fd 2，需在文件描述符级别重定向 stderr
+    _stderr_fd = sys.stderr.fileno()
+    _saved_stderr = os.dup(_stderr_fd)
+    _devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(_devnull_fd, _stderr_fd)
+        from langchain_core.prompts import PromptTemplate
+        try:
+            from langchain_community.llms import Tongyi
+            llm = Tongyi(temperature=0)
+            chain_llm = llm
+        except ModuleNotFoundError as e:
+            if "pydantic_v1" in str(e):
+                from langchain_community.chat_models import ChatTongyi
+                chat = ChatTongyi(model_name="qwen-turbo", temperature=0)
+                chain_llm = chat | (lambda msg: msg.content)
+            else:
+                raise
+        parser = XMLOutputParser()
+        prompt = PromptTemplate(
+            template="请提供关于{topic}的信息，包括定义、特点和应用。\n{format_instructions}",
+            input_variables=["topic"],
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+        )
+        chain = prompt | chain_llm | parser
+        result = chain.invoke({"topic": "人工智能"})
+    finally:
+        os.dup2(_saved_stderr, _stderr_fd)
+        os.close(_saved_stderr)
+        os.close(_devnull_fd)
+
     print("解析结果:")
     print(result)
